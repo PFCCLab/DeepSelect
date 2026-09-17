@@ -1,5 +1,7 @@
 build
 *.so
+deep_select/deep_select_cuda.py
+deep_select_paddle_benchmark.json
 *.egg-info/
 __pycache__/
 dist/

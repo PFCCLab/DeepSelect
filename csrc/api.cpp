@@ -50,7 +50,24 @@ void topk(
     KU_CHECK_DEVICE(output_value);
     KU_CHECK_DEVICE(output_index);
     KU_CHECK_DEVICE(output_idx_offset);
-    
+
+    int current_device = -1;
+    auto cuda_status = cudaGetDevice(&current_device);
+    TORCH_CHECK(cuda_status == cudaSuccess,
+                "cudaGetDevice failed: ", cudaGetErrorString(cuda_status));
+    const int input_device = input.device().index();
+    TORCH_CHECK(current_device == input_device, "input must be on the current CUDA device");
+    auto check_same_device = [&](const auto& tensor_or_opt) {
+        return ku::_check_optional_tensor(tensor_or_opt, [&](const at::Tensor& t) {
+            return t.device().index() == input_device;
+        });
+    };
+    TORCH_CHECK(check_same_device(begin), "begin must be on the input CUDA device");
+    TORCH_CHECK(check_same_device(end), "end must be on the input CUDA device");
+    TORCH_CHECK(check_same_device(output_value), "output_value must be on the input CUDA device");
+    TORCH_CHECK(check_same_device(output_index), "output_index must be on the input CUDA device");
+    TORCH_CHECK(check_same_device(output_idx_offset), "output_idx_offset must be on the input CUDA device");
+
     KU_CHECK_SHAPE(input, batch_size, vocab_size);
     KU_CHECK_SHAPE(begin, batch_size);
     KU_CHECK_SHAPE(end, batch_size);
@@ -76,10 +93,9 @@ void topk(
         int64_t cur_stride = tensor.stride(0);
         uint64_t itemsize = tensor.dtype().itemsize();
         TORCH_CHECK(cur_stride * itemsize % alignment_requirement_bytes == 0,
-            std::format("{}.stride(0) (currently {} numbers) must be a multiple of {} Bytes ({} numbers)",
-                tensor_name, cur_stride,
-                alignment_requirement_bytes, alignment_requirement_bytes / itemsize
-            )
+            tensor_name, ".stride(0) (currently ", cur_stride,
+            " numbers) must be a multiple of ", alignment_requirement_bytes,
+            " Bytes (", alignment_requirement_bytes / itemsize, " numbers)"
         );
     };
     check_dim0_stride("input", input, INPUT_STRIDE_ALIGNMENT_REQUIREMENT);
@@ -88,7 +104,7 @@ void topk(
         check_dim0_stride("value", *output_value, OUTPUT_STRIDE_ALIGNMENT_REQUIREMENT);
     }
 
-    cudaDeviceProp* device_prop = at::cuda::getDeviceProperties(at::cuda::current_device());
+    cudaDeviceProp* device_prop = at::cuda::getDeviceProperties(input_device);
     TORCH_CHECK(device_prop != nullptr);
     TopkSelectArgs args = {
         (uint32_t)batch_size,
@@ -201,4 +217,9 @@ std::pair<uint32_t, uint32_t> get_alignment_requirement() {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("topk", &topk);
     m.def("get_alignment_requirement", &get_alignment_requirement);
+#ifdef DEEP_SELECT_USE_PADDLE
+    m.def("framework", []() { return "paddle"; });
+#else
+    m.def("framework", []() { return "torch"; });
+#endif
 }
