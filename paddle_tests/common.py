@@ -11,6 +11,9 @@ import deep_select
 from generators import generate_rows
 from oracle import paddle_differential, verify_selection
 
+if not __debug__:
+    raise RuntimeError("paddle_tests must not run with Python assertions disabled")
+
 
 DTYPES = {"fp32": paddle.float32, "bf16": paddle.bfloat16}
 INDEX_DTYPES = {"int32": paddle.int32, "int64": paddle.int64}

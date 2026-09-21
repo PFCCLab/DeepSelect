@@ -5,7 +5,7 @@ import hashlib
 import numpy as np
 
 
-GENERATOR_VERSION = 2
+GENERATOR_VERSION = 3
 
 
 def _rng(seed: int, name: str, row: int = 0):
@@ -36,8 +36,14 @@ def generate_rows(case) -> tuple[np.ndarray, dict]:
         rng = _rng(case.seed, requested, row)
         width = case.width
         if requested in {"unique", "unique_permuted"}:
-            values = np.arange(width, dtype=np.float32)
-            values = (values - width / 2) / max(width, 1)
+            if case.dtype == "bf16":
+                positive = np.arange(0x0000, 0x7F80, dtype=np.uint16)
+                negative = np.arange(0x8001, 0xFF80, dtype=np.uint16)
+                representable = bf16_bits_to_fp32(np.concatenate([positive, negative]))
+                values = np.resize(representable, width)
+            else:
+                values = np.arange(width, dtype=np.float32)
+                values = (values - width / 2) / max(width, 1)
             rng.shuffle(values)
         elif requested in {"normal", "llm_logits"}:
             scale = 1.0 if requested == "normal" else (0.5 + row % 7 * 0.5)
@@ -75,8 +81,9 @@ def generate_rows(case) -> tuple[np.ndarray, dict]:
             values = bits.view(np.float32)
             rng.shuffle(values)
         elif requested == "finite_extremes":
-            choices = np.array([np.finfo(np.float32).max, -np.finfo(np.float32).max,
-                                np.finfo(np.float32).tiny, -np.finfo(np.float32).tiny, 0.0], np.float32)
+            maximum = np.float32(3.3895314e38) if case.dtype == "bf16" else np.finfo(np.float32).max
+            minimum = np.float32(1.1754944e-38) if case.dtype == "bf16" else np.finfo(np.float32).tiny
+            choices = np.array([maximum, -maximum, minimum, -minimum, 0.0], np.float32)
             values = np.resize(choices, width)
             rng.shuffle(values)
         elif requested == "infinity":
@@ -108,13 +115,23 @@ def generate_rows(case) -> tuple[np.ndarray, dict]:
 def validate_generated(case, rows: np.ndarray) -> dict:
     if rows.shape != (case.rows, case.width):
         raise RuntimeError(f"generator produced {rows.shape}, expected {(case.rows, case.width)}")
-    unique_counts = [int(np.unique(row).size) for row in rows]
+    exact_cardinality = (
+        case.distribution.startswith("low_cardinality_")
+        or case.distribution == "all_equal"
+        or case.distribution in {"unique", "unique_permuted"} and case.width <= (65279 if case.dtype == "bf16" else 16777216)
+    )
+    unique_counts = [int(np.unique(row).size) for row in rows] if exact_cardinality else []
     if case.distribution.startswith("low_cardinality_"):
         expected = min(int(case.distribution.rsplit("_", 1)[1]), case.width)
         if any(count != expected for count in unique_counts):
             raise RuntimeError(f"cardinality mismatch: expected {expected}, got {unique_counts}")
     if case.distribution == "all_equal" and any(count != min(1, case.width) for count in unique_counts):
         raise RuntimeError("all_equal generator is not equal")
+    if case.distribution in {"unique", "unique_permuted"} and unique_counts:
+        if any(count != case.width for count in unique_counts):
+            raise RuntimeError(f"unique generator repeated values: {unique_counts}")
+    if case.distribution == "finite_extremes" and (np.isinf(rows).any() or np.isnan(rows).any()):
+        raise RuntimeError("finite_extremes generator produced non-finite values")
     if case.distribution.startswith("boundary_tie") and case.width > case.topk:
         for row in rows:
             theta = np.partition(row, case.width - case.topk)[case.width - case.topk]
@@ -125,8 +142,8 @@ def validate_generated(case, rows: np.ndarray) -> dict:
         if not (np.any(bits == 0) and np.any(bits == 0x80000000)):
             raise RuntimeError("signed_zero generator lost a zero sign")
     return {
-        "unique_min": min(unique_counts, default=0),
-        "unique_max": max(unique_counts, default=0),
+        "unique_min": min(unique_counts) if unique_counts else None,
+        "unique_max": max(unique_counts) if unique_counts else None,
         "nan_count": int(np.isnan(rows).sum()),
         "positive_inf_count": int(np.isposinf(rows).sum()),
         "negative_inf_count": int(np.isneginf(rows).sum()),
@@ -142,6 +159,8 @@ def self_test():
         Case("g-tie", 3, 4096, 512, distribution="boundary_tie"),
         Case("g-zero", 3, 4096, 512, distribution="signed_zero"),
         Case("g-bf16", 3, 4096, 512, dtype="bf16", distribution="llm_logits"),
+        Case("g-bf16-unique", 3, 4096, 512, dtype="bf16", distribution="unique"),
+        Case("g-bf16-extremes", 3, 4096, 512, dtype="bf16", distribution="finite_extremes"),
     ]
     for case in cases:
         first, first_meta = generate_rows(case)

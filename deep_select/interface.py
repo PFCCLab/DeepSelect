@@ -73,12 +73,17 @@ def topk(
         raise ValueError("`begin` is not supported now")
     if hint is not None:
         raise ValueError("`hint` is not supported now")
+    if input.dtype not in (_framework.bfloat16, _framework.float32):
+        raise TypeError("input dtype must be bfloat16 or float32")
+    if indices_type not in (_framework.int32, _framework.int64):
+        raise TypeError("indices_type must be int32 or int64")
+    if output_idx is not None and output_idx.dtype != indices_type:
+        raise TypeError(f"output_idx must have dtype {indices_type}")
     N = input.shape[0]
 
     def get_empty_and_aligned_tensor(dim0: int, dim1: int, dtype):
         """Return a tensor backed by storage whose row stride is 32-byte aligned."""
-        itemsize = _ITEMSIZE[dtype]
-        output_stride_requirement = get_stride_requirement()[1] // itemsize
+        output_stride_requirement = get_stride_requirement()[1] // _ITEMSIZE[dtype]
         dim1_rounded = (dim1 + output_stride_requirement - 1) // output_stride_requirement * output_stride_requirement
         if _FRAMEWORK == "paddle":
             storage = _framework.empty((dim0, dim1_rounded), dtype=dtype)
@@ -87,28 +92,15 @@ def topk(
         return storage[:, :dim1]
 
     if _FRAMEWORK == "paddle":
-        original_device = _framework.device.get_device()
         input_device = f"gpu:{input.place.gpu_device_id()}"
-        if original_device != input_device:
+        if _framework.device.get_device() != input_device:
             _framework.device.set_device(input_device)
-        output_val = get_empty_and_aligned_tensor(N, topk, input.dtype) if return_value else None
-        if output_idx is None:
-            output_idx = get_empty_and_aligned_tensor(N, topk, indices_type)
-        _backend.topk(
-            input, topk, begin, end, sorted, sorted_index,
-            output_val, output_idx, output_idx_offset, idx_oob_fill_value,
-            value_oob_fill_value, return_value, abort_when_nan_found,
-        )
-    else:
-        output_val = get_empty_and_aligned_tensor(N, topk, input.dtype) if return_value else None
-        if output_idx is None:
-            output_idx = get_empty_and_aligned_tensor(N, topk, indices_type)
-        _backend.topk(
-            input, topk, begin, end, sorted, sorted_index,
-            output_val, output_idx, output_idx_offset, idx_oob_fill_value,
-            value_oob_fill_value, return_value, abort_when_nan_found,
-        )
-    if output_idx.dtype != indices_type:
-        raise TypeError(f"output_idx must have dtype {indices_type}")
-
+    output_val = get_empty_and_aligned_tensor(N, topk, input.dtype) if return_value else None
+    if output_idx is None:
+        output_idx = get_empty_and_aligned_tensor(N, topk, indices_type)
+    _backend.topk(
+        input, topk, begin, end, sorted, sorted_index,
+        output_val, output_idx, output_idx_offset, idx_oob_fill_value,
+        value_oob_fill_value, return_value, abort_when_nan_found,
+    )
     return output_val, output_idx

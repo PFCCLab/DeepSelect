@@ -105,7 +105,8 @@ def build_on_cuda_platform():
     else:
         from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
 
-    assert CUDA_HOME is not None, f"{BUILD_FRAMEWORK} must be compiled with CUDA support"
+    if CUDA_HOME is None:
+        raise RuntimeError(f"{BUILD_FRAMEWORK} must be compiled with CUDA support")
 
     def append_nvcc_threads(nvcc_extra_args):
         nvcc_threads = os.getenv("NVCC_THREADS") or "16"

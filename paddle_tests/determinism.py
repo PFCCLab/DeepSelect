@@ -67,7 +67,7 @@ def interleave_cases(cases, rounds):
     return baselines
 
 
-def fresh_process(case: Case, count: int):
+def fresh_process(case: Case, count: int, timeout: float):
     digests = []
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -78,6 +78,7 @@ def fresh_process(case: Case, count: int):
             text=True,
             capture_output=True,
             check=True,
+            timeout=timeout,
         )
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         digests.append((payload["input_digest"], payload["output_digest"]))
@@ -92,6 +93,7 @@ def main():
     parser.add_argument("--fresh-processes", type=int, default=5)
     parser.add_argument("--streams", type=int, default=4)
     parser.add_argument("--stream-rounds", type=int, default=20)
+    parser.add_argument("--process-timeout", type=float, default=300.0)
     args = parser.parse_args()
     paddle.set_device("gpu:0")
 
@@ -114,7 +116,7 @@ def main():
         Case("fp32-k1025", 64, 32768, 1025, "fp32", distribution="boundary_tie"),
     ]
     results["interleave"] = interleave_cases(interleaved, 20)
-    results["fresh_process"] = fresh_process(strong_ties[-1], args.fresh_processes)
+    results["fresh_process"] = fresh_process(strong_ties[-1], args.fresh_processes, args.process_timeout)
     print(json.dumps({"status": "PASS", "results": results}, sort_keys=True))
 
 

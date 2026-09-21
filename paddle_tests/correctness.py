@@ -105,7 +105,10 @@ def check_safe_errors():
     base = paddle.randn([2, 8192], dtype="float32")
     expect_error(lambda: __import__("deep_select").topk(base, 0), "topk must > 0")
     expect_error(lambda: __import__("deep_select").topk(base, 4097), "topk must be <= 4096")
-    expect_error(lambda: __import__("deep_select").topk(base.cast("float16"), 32), "FLOAT16")
+    expect_error(
+        lambda: __import__("deep_select").topk(base.cast("float16"), 32),
+        "input dtype must be bfloat16 or float32",
+    )
     expect_error(lambda: __import__("deep_select").topk(base, 32, sorted=True, return_value=False), "return_value")
     expect_error(lambda: __import__("deep_select").topk(base, 32, sorted=True, sorted_index=True), "cannot be used")
 
@@ -125,6 +128,13 @@ def check_stream():
     verify_case(case, input_tensor, None, None, values, indices)
 
 
+def run_contract_checks():
+    check_output_buffer_and_offset()
+    check_nan_semantics()
+    check_safe_errors()
+    check_stream()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tier", choices=("smoke", "full"), default="smoke")
@@ -138,12 +148,11 @@ def main():
         return
     paddle.set_device("gpu:0")
     passed, skipped = run_cases(cases, int(args.max_gib * 1024**3))
-    check_output_buffer_and_offset()
-    check_nan_semantics()
-    check_safe_errors()
-    check_stream()
-    print(json.dumps({"status": "PASS", "tier": args.tier, "passed": passed, "skipped": skipped}))
+    run_contract_checks()
+    status = "PASS" if skipped == 0 else "INCOMPLETE"
+    print(json.dumps({"status": status, "tier": args.tier, "passed": passed, "skipped": skipped}))
+    return 0 if skipped == 0 else 3
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
