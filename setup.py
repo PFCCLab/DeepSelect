@@ -5,7 +5,9 @@ from pathlib import Path
 
 from setuptools import setup, find_packages
 
-import tests.kernelkit as kk
+BUILD_FRAMEWORK = os.getenv("DEEP_SELECT_BUILD_FRAMEWORK", "torch").lower()
+if BUILD_FRAMEWORK not in {"torch", "paddle"}:
+    raise ValueError("DEEP_SELECT_BUILD_FRAMEWORK must be 'torch' or 'paddle'")
 
 exec(open("deep_select/__version__.py").read())
 
@@ -98,9 +100,13 @@ CUDA_SOURCES = [
 ]
 
 def build_on_cuda_platform():
-    from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
+    if BUILD_FRAMEWORK == "paddle":
+        from paddle.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
+    else:
+        from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
 
-    assert CUDA_HOME is not None, "PyTorch must be compiled with CUDA support"
+    if CUDA_HOME is None:
+        raise RuntimeError(f"{BUILD_FRAMEWORK} must be compiled with CUDA support")
 
     def append_nvcc_threads(nvcc_extra_args):
         nvcc_threads = os.getenv("NVCC_THREADS") or "16"
@@ -128,11 +134,15 @@ def build_on_cuda_platform():
 
     this_dir = os.path.dirname(os.path.abspath(__file__))
 
+    cxx_args = ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DKERUTILS_IS_BUILD_ON_CUDA"]
+    if BUILD_FRAMEWORK == "paddle":
+        cxx_args.extend(["-DPADDLE_WITH_CUDA", "-DDEEP_SELECT_USE_PADDLE"])
+
     ext_modules = [CUDAExtension(
         name="deep_select.deep_select_cuda",
         sources=CUDA_SOURCES,
         extra_compile_args={
-            "cxx": ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DKERUTILS_IS_BUILD_ON_CUDA"],
+            "cxx": cxx_args,
             "nvcc": append_nvcc_threads([
                 "-O3",
                 "-std=c++20",
@@ -165,32 +175,46 @@ def build_on_cuda_platform():
     )]
 
     class SpillCheckBuildExtension(BuildExtension):
-        STACK_BASELINE = 8  # Because of we're using `printf`
+        STACK_BASELINE = 8  # Because we're using `printf`
 
         def run(self):
             super().run()
+            if BUILD_FRAMEWORK == "paddle" and self.inplace:
+                return  # Paddle renames the artifact after build_ext; ptxas already enforces --warn-on-spills.
             for ext in self.extensions:
                 so_path = self.get_ext_fullpath(ext.name)
-                spills = kk.check_kernel_reg_spill_in_artifact(
-                    so_path,
-                    stack_baseline=self.STACK_BASELINE,
-                    suppress_checking_env_var="DEEP_SELECT_DISABLE_REG_SPILL_CHECK",
-                )
+                if BUILD_FRAMEWORK == "paddle":
+                    cuda_home = CUDA_HOME if CUDA_HOME is not None else "/usr/local/cuda"
+                    result = subprocess.run(
+                        [os.path.join(cuda_home, "bin/cuobjdump"), "-res-usage", so_path],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    spills = []
+                    for line in result.stdout.splitlines():
+                        if "LOCAL:" in line or "STACK:" in line:
+                            fields = dict(part.split(":", 1) for part in line.split() if ":" in part)
+                            if int(fields.get("LOCAL", 0)) > 0 or int(fields.get("STACK", 0)) > self.STACK_BASELINE:
+                                spills.append(line)
+                else:
+                    from tests.kernelkit.build import check_kernel_reg_spill_in_artifact
+
+                    spills = check_kernel_reg_spill_in_artifact(
+                        so_path,
+                        stack_baseline=self.STACK_BASELINE,
+                        suppress_checking_env_var="DEEP_SELECT_DISABLE_REG_SPILL_CHECK",
+                    )
                 if spills:
                     raise RuntimeError("Register spilling detected. Build failed!")
 
     return (ext_modules, SpillCheckBuildExtension)
 
 
-build_target_platform = kk.get_current_platform()
+build_target_platform = "CUDA"
 overrided_platform = os.environ.get('DEEP_SELECT_BUILD_TARGET_PLATFORM', None)
-if overrided_platform is not None:
-    overrided_platform_dict = {
-        'CUDA': kk.Platform.CUDA
-    }
-    if overrided_platform not in overrided_platform_dict:
-        raise ValueError(f"Invalid `DEEP_SELECT_BUILD_TARGET_PLATFORM`: {overrided_platform}. Available values are {list(overrided_platform_dict.keys())}")
-    build_target_platform = overrided_platform_dict[overrided_platform]
+if overrided_platform is not None and overrided_platform != "CUDA":
+    raise ValueError("Invalid `DEEP_SELECT_BUILD_TARGET_PLATFORM`: only CUDA is supported")
 print(f"Build target: {build_target_platform}")
 
 try:
@@ -203,10 +227,7 @@ except Exception:
 
 datetime_rev = datetime.now().strftime("%Y%m%d.%H%M%S")
 
-if build_target_platform == kk.Platform.CUDA:
-    ext_modules, build_ext = build_on_cuda_platform()
-else:
-    raise RuntimeError(f"Unsupported platform: {build_target_platform}.\n(You may use `DEEP_SELECT_BUILD_TARGET_PLATFORM` to explicitly set the target platform for building)")
+ext_modules, build_ext = build_on_cuda_platform()
 
 
 setup(
