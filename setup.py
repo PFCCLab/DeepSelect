@@ -1,6 +1,5 @@
 import os
 import subprocess
-from datetime import datetime
 from pathlib import Path
 
 from setuptools import setup, find_packages
@@ -225,14 +224,12 @@ except Exception:
     # a valid PEP 440 local version in that case.
     git_rev = "unknown"
 
-datetime_rev = datetime.now().strftime("%Y%m%d.%H%M%S")
-
 ext_modules, build_ext = build_on_cuda_platform()
 
 
 setup(
     name="deep_select",
-    version=f"{__version__}+{git_rev}.{datetime_rev}",
+    version=f"{__version__}+{git_rev}",
     packages=find_packages(include=['deep_select']),
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
