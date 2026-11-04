@@ -122,9 +122,9 @@ def build_on_cuda_platform():
         raise RuntimeError("sm100 compilation requires NVCC 12.9 or higher.")
 
     cc_flag = [
-        # Currently skip build for sm80 and sm90 to speed up compilation
+        # Currently skip build for sm80 to speed up compilation
         # "-gencode", "arch=compute_80,code=sm_80",
-        # "-gencode", "arch=compute_90a,code=sm_90a",
+        "-gencode", "arch=compute_90a,code=sm_90a",
 
         # Compile sm100 and sm103 separately to give the compiler more room for optimization
         "-gencode", "arch=compute_100a,code=sm_100a",
